@@ -48,3 +48,6 @@ compile_commands.json
 .idea/
 cmake-build-debug/
 tags
+
+#MacOS
+*.DS_Store
