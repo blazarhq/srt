@@ -90,7 +90,7 @@ bool CUDTGroup::applyGroupSequences(SRTSOCKET target, int32_t& w_snd_isn, int32_
 
             // NOTE: the groupwise scheduling sequence might have been set
             // already. If so, it means that it was set by either:
-            // - the call of this function on the very first conencted socket (see below)
+            // - the call of this function on the very first connected socket (see below)
             // - the call to `sendBroadcast` or `sendBackup`
             // In both cases, we want THIS EXACTLY value to be reported
             if (m_iLastSchedSeqNo != -1)
@@ -205,7 +205,7 @@ void CUDTGroup::debugMasterData(SRTSOCKET slave)
     else
     {
         // The returned master_st is the master's start time. Calculate the
-        // differene time.
+        // difference time.
         IF_LOGGING(steady_clock::duration master_tdiff = m_tsStartTime - start_time);
         LOGC(cnlog.Debug, log << CONID() << "FOUND GROUP MASTER LINK: peer=$" << mpeer
                 << " - start time diff: " << FormatDuration<DUNIT_S>(master_tdiff));
@@ -595,7 +595,7 @@ void CUDTGroup::deriveSettings(CUDT* u)
     IM(SRTO_RCVLATENCY, iRcvLatency);
     IM(SRTO_PEERLATENCY, iPeerLatency);
     IM(SRTO_SNDDROPDELAY, iSndDropDelay);
-    // Special handling of SRTO_PAYLOADSIZE becuase API stores the value as int32_t,
+    // Special handling of SRTO_PAYLOADSIZE because API stores the value as int32_t,
     // while the config structure stores it as size_t.
     importTrivialOption(m_config, SRTO_PAYLOADSIZE, (int)u->m_config.zExpPayloadSize);
     IMF(SRTO_TLPKTDROP, m_bTLPktDrop);
@@ -730,6 +730,10 @@ static bool getOptDefault(SRT_SOCKOPT optname, void* pw_optval, int& w_optlen)
         RD(true);
     case SRTO_MAXBW:
         RD(int64_t(-1));
+#ifdef ENABLE_MAXREXMITBW
+    case SRTO_MAXREXMITBW:
+        RD(int64_t(-1));
+#endif
     case SRTO_INPUTBW:
         RD(int64_t(-1));
     case SRTO_MININPUTBW:
@@ -862,17 +866,25 @@ void CUDTGroup::getOpt(SRT_SOCKOPT optname, void* pw_optval, int& w_optlen)
     {
         // Can't have m_GroupLock locked while calling getOpt on a member socket
         // because the call will acquire m_ControlLock leading to a lock-order-inversion.
+        SRTSOCKET firstsocket = SRT_INVALID_SOCK;
         enterCS(m_GroupLock);
         gli_t gi = m_Group.begin();
-        CUDTSocket* const ps = (gi != m_Group.end()) ? gi->ps : NULL;
-        CUDTUnited::SocketKeeper sk(CUDT::uglobal(), ps);
+        if (gi != m_Group.end())
+            firstsocket = gi->ps->core().id();
         leaveCS(m_GroupLock);
-        if (sk.socket)
+        // CUDTUnited::m_GlobControlLock can't be acquired with m_GroupLock either.
+        // We have also no guarantee that after leaving m_GroupLock the socket isn't
+        // going to be deleted. Hence use the safest method by extracting through the id.
+        if (firstsocket != SRT_INVALID_SOCK)
         {
-            // Return the value from the first member socket, if any is present
-            // Note: Will throw exception if the request is wrong.
-            sk.socket->core().getOpt(optname, (pw_optval), (w_optlen));
-            is_set_on_socket = true;
+            CUDTUnited::SocketKeeper sk(CUDT::uglobal(), firstsocket);
+            if (sk.socket)
+            {
+                // Return the value from the first member socket, if any is present
+                // Note: Will throw exception if the request is wrong.
+                sk.socket->core().getOpt(optname, (pw_optval), (w_optlen));
+                is_set_on_socket = true;
+            }
         }
     }
 
@@ -893,7 +905,7 @@ void CUDTGroup::getOpt(SRT_SOCKOPT optname, void* pw_optval, int& w_optlen)
         return;
     }
 
-    // Found a value set on or derived by a group. Prefer returing it over the one taken from a member socket.
+    // Found a value set on or derived by a group. Prefer returning it over the one taken from a member socket.
     // Check the size first.
     if (w_optlen < int(i->value.size()))
         throw CUDTException(MJ_NOTSUP, MN_XSIZE, 0);
@@ -923,7 +935,7 @@ SRT_KM_STATE CUDTGroup::getGroupEncryptionState()
             // no password, but peer did, and ENFORCEDENCRYPTION=false allowed
             // this connection to be established. UNSECURED can't be taken in this
             // case because this would suggest that BOTH are unsecured, that is,
-            // we have established an unsecured connection (which ain't true).
+            // we have established an unsecured connection (which is not true).
             if (gst == SRT_KM_S_UNSECURED && cc->m_SndKmState == SRT_KM_S_NOSECRET)
                 gst = SRT_KM_S_NOSECRET;
             kmstates.insert(gst);
@@ -1036,7 +1048,7 @@ void CUDTGroup::close()
     vector<SRTSOCKET> ids;
 
     {
-        ScopedLock glob(CUDT::uglobal().m_GlobControlLock);
+        ExclusiveLock glob(CUDT::uglobal().m_GlobControlLock);
         ScopedLock g(m_GroupLock);
 
         m_bClosing = true;
@@ -1138,7 +1150,7 @@ void CUDTGroup::close()
     // Release blocked clients
     // XXX This looks like a dead code. Group receiver functions
     // do not use any lock on m_RcvDataLock, it is likely a remainder
-    // of the old, internal impementation. 
+    // of the old, internal implementation.
     // CSync::lock_notify_one(m_RcvDataCond, m_RcvDataLock);
 }
 
@@ -2964,7 +2976,7 @@ CUDTGroup::BackupMemberState CUDTGroup::sendBackup_QualifyActiveState(const gli_
     const int64_t probing_period_us = initial_stabtout_us + 5 * CUDT::COMM_SYN_INTERVAL_US;
 
     // RTT and RTTVar values are still being refined during the probing period,
-    // therefore the dymanic timeout should not be used during the probing period.
+    // therefore the dynamic timeout should not be used during the probing period.
     const bool is_activation_phase = !is_zero(u.freshActivationStart())
         && (count_microseconds(currtime - u.freshActivationStart()) <= probing_period_us);
 
@@ -3401,7 +3413,7 @@ void CUDTGroup::send_CloseBrokenSockets(vector<SRTSOCKET>& w_wipeme)
         // With unlocked GroupLock, we can now lock GlobControlLock.
         // This is needed to prevent any of them deleted from the container
         // at the same time.
-        ScopedLock globlock(CUDT::uglobal().m_GlobControlLock);
+        SharedLock globlock(CUDT::uglobal().m_GlobControlLock);
 
         for (vector<SRTSOCKET>::iterator p = w_wipeme.begin(); p != w_wipeme.end(); ++p)
         {
@@ -3438,7 +3450,7 @@ void CUDTGroup::sendBackup_CloseBrokenSockets(SendBackupCtx& w_sendBackupCtx)
     // With unlocked GroupLock, we can now lock GlobControlLock.
     // This is needed prevent any of them be deleted from the container
     // at the same time.
-    ScopedLock globlock(CUDT::uglobal().m_GlobControlLock);
+    SharedLock globlock(CUDT::uglobal().m_GlobControlLock);
 
     typedef vector<BackupMemberStateEntry>::const_iterator const_iter_t;
     for (const_iter_t member = w_sendBackupCtx.memberStates().begin(); member != w_sendBackupCtx.memberStates().end(); ++member)
@@ -3499,7 +3511,7 @@ void CUDTGroup::sendBackup_RetryWaitBlocked(SendBackupCtx&       w_sendBackupCtx
     if ((num_unstable + num_wary + num_pending == 0) || !w_none_succeeded)
         return;
 
-    HLOGC(gslog.Debug, log << "grp/sendBackup: no successfull sending: "
+    HLOGC(gslog.Debug, log << "grp/sendBackup: no successful sending: "
         << (num_unstable + num_wary) << " unstable links, "
         << num_pending << " pending - waiting to retry sending...");
 
@@ -3687,7 +3699,7 @@ void CUDTGroup::sendBackup_SilenceRedundantLinks(SendBackupCtx& w_sendBackupCtx,
 {
     // The most important principle is to keep the data being sent constantly,
     // even if it means temporarily full redundancy.
-    // A member can be silenced only if there is at least one stable memebr.
+    // A member can be silenced only if there is at least one stable member.
     const unsigned num_stable = w_sendBackupCtx.countMembersByState(BKUPST_ACTIVE_STABLE);
     if (num_stable == 0)
         return;
@@ -4171,7 +4183,7 @@ void CUDTGroup::processKeepalive(CUDTGroup::SocketData* gli)
         // the sequence per being IDLE and empty buffer), so a large portion of initial
         // series of packets may come with past sequence, delaying this way with ACK,
         // which may result not only with exceeded stability timeout (which fortunately
-        // isn't being measured in this case), but also with receiveing keepalive
+        // isn't being measured in this case), but also with receiving keepalive
         // (therefore we also don't reset the link to IDLE in the temporary activation period).
         if (gli->sndstate == SRT_GST_RUNNING && is_zero(gli->ps->core().m_tsFreshActivation))
         {

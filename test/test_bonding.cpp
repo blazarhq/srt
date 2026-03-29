@@ -326,7 +326,7 @@ TEST(Bonding, CloseGroupAndSocket)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             if (srt_send(ss, buf, 1316) == -1)
             {
-                std::cout << "[Sender] sending failure, exitting after sending " << n << " packets\n";
+                std::cout << "[Sender] sending failure, exiting after sending " << n << " packets\n";
                 break;
             }
 
@@ -393,7 +393,7 @@ TEST(Bonding, Options)
     EXPECT_NE(srt_setsockflag(grp, SRTO_PACKETFILTER, packet_filter.c_str(), (int)packet_filter.size()), SRT_ERROR);
 
     // ================
-    // Linger is an option of a trivial type, but differes from other integer-typed options.
+    // Linger is an option of a trivial type, but differs from other integer-typed options.
     // Therefore checking it specifically.
     const linger l = {1, 10};
     srt_setsockflag(grp, SRTO_LINGER, &l, sizeof l);
@@ -732,7 +732,6 @@ TEST(Bonding, ConnectNonBlocking)
         EXPECT_NE(srt_bind(g_listen_socket, sa.get(), sa.size()), -1);
         const int yes = 1;
         srt_setsockflag(g_listen_socket, SRTO_GROUPCONNECT, &yes, sizeof yes);
-        EXPECT_NE(srt_listen(g_listen_socket, 5), -1);
 
         int lsn_eid = srt_epoll_create();
         int lsn_events = SRT_EPOLL_IN | SRT_EPOLL_ERR | SRT_EPOLL_UPDATE;
@@ -770,8 +769,14 @@ TEST(Bonding, ConnectNonBlocking)
 
                 ThreadName::set("TEST_A");
 
-                cout << "[A] Waiting for accept\n";
+                cout << "[A] Waiting for main thread to pass connect()\n";
 
+                // Delay with executing accept to keep the peer in "in progress"
+                // connection state.
+                connect_passed.get_future().get();
+                EXPECT_NE(srt_listen(g_listen_socket, 5), SRT_ERROR);
+
+                cout << "[A] Waiting for accept\n";
                 // This can wait in infinity; worst case it will be killed in process.
                 int uwait_res = srt_epoll_uwait(lsn_eid, ev, 3, -1);
                 EXPECT_EQ(uwait_res, 1);
@@ -783,9 +788,6 @@ TEST(Bonding, ConnectNonBlocking)
                 bool have_also_update = ev[0].events & SRT_EPOLL_UPDATE;
 
                 cout << "[A] Accept delay until connect done...\n";
-                // Delay with executing accept to keep the peer in "in progress"
-                // connection state.
-                connect_passed.get_future().get();
 
                 cout << "[A] Accept: go on\n";
 
@@ -1282,7 +1284,7 @@ TEST(Bonding, BackupPrioritySelection)
 
     g_nconnected = 0;
     g_nfailed = 0;
-    volatile bool recvd = false;
+    sync::atomic<bool> recvd { false };
 
     // 1.
     sockaddr_in bind_sa;
@@ -1592,3 +1594,12 @@ CheckLinksAgain:
 }
 
 
+TEST(Bonding, ApiConfig)
+{
+    using namespace std;
+    SRT_SOCKOPT_CONFIG config;
+
+    string example = "example_long_excessively";
+
+    EXPECT_EQ(srt_config_add(&config, SRTO_BINDTODEVICE, (void*)example.data(), example.size()), 0);
+}
