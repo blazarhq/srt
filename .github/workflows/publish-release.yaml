@@ -114,15 +114,7 @@ jobs:
           # must run ldconfig so the dynamic linker learns about them.
           # dpkg supports an 'activate-noawait ldconfig' trigger, but for
           # maximum compatibility we also ship an explicit postinst script.
-          cat > /tmp/srt-postinst.sh << 'POSTINST'
-#!/bin/sh
-set -e
-case "$1" in
-    configure|triggered)
-        ldconfig
-        ;;
-esac
-POSTINST
+          printf '#!/bin/sh\nset -e\ncase "$1" in\n    configure|triggered)\n        ldconfig\n        ;;\nesac\n' > /tmp/srt-postinst.sh
           chmod +x /tmp/srt-postinst.sh
 
       - name: Install FPM
