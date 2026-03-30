@@ -100,11 +100,30 @@ jobs:
             -DENABLE_ENCRYPTION=ON \
             -DENABLE_BONDING=ON \
             -DENABLE_APPS=ON \
+            -DENABLE_SHARED=ON \
+            -DENABLE_STATIC=OFF \
             -DENABLE_UNITTESTS=OFF \
             -DENABLE_TESTING=OFF
 
           cmake --build . -j$(nproc)
           DESTDIR=$PWD/../build-output cmake --install .
+
+      - name: Create ldconfig postinstall script
+        run: |
+          # Standard Debian mechanism: packages that install shared libraries
+          # must run ldconfig so the dynamic linker learns about them.
+          # dpkg supports an 'activate-noawait ldconfig' trigger, but for
+          # maximum compatibility we also ship an explicit postinst script.
+          cat > /tmp/srt-postinst.sh << 'POSTINST'
+#!/bin/sh
+set -e
+case "$1" in
+    configure|triggered)
+        ldconfig
+        ;;
+esac
+POSTINST
+          chmod +x /tmp/srt-postinst.sh
 
       - name: Install FPM
         run: |
@@ -129,6 +148,9 @@ jobs:
             --url "https://github.com/blazarhq/srt" \
             --license "MPL-2.0" \
             --depends "libssl3" \
+            --after-install /tmp/srt-postinst.sh \
+            --deb-activate-noawait ldconfig \
+            --deb-no-default-config-files \
             -p "dist/srt_${VERSION}_${ARCH}.deb" \
             build-output/usr/=/usr/
 
